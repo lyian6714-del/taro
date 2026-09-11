@@ -17,6 +17,7 @@ shuffleBtn.addEventListener('click', async () => {
     shuffleBtn.innerText = "洗牌中 (Shuffling...)";
     
     const response = await fetch('/api/shuffle-deck');
+    if (!response.ok) throw new Error('洗牌失败');
     deckData = await response.json();
     
     spreadArea.innerHTML = '';
@@ -108,10 +109,14 @@ async function revealCardsAndInterpret() {
                 body: JSON.stringify({ question: userQuestion, cards: pickedCards })
             });
             const data = await response.json();
+
+            if (!response.ok || !data.interpretation) {
+                throw new Error(data.error || '解读失败');
+            }
             
             resultsArea.innerHTML = `<h2 class="glow-text" style="font-size: 2rem; margin-bottom: 20px; text-align:center;">命运的启示</h2>${data.interpretation}`;
         } catch (error) {
-            resultsArea.innerHTML = `<div style="color: red; text-align:center;">星辰连结中断，请稍后再试。</div>`;
+            resultsArea.innerHTML = `<div style="color: #ff9da7; text-align:center;">${error.message || '星辰连结中断，请稍后再试。'}</div>`;
         }
         
         shuffleBtn.disabled = false;

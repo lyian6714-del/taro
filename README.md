@@ -82,12 +82,13 @@ npm start
 
 ## 🛠 部署
 
-推荐使用 Zeabur（国内访问快）或 Railway 一键部署：
+项目已包含 Render Blueprint，可使用 Render 免费 Web Service 部署：
 
-1. 推送到 GitHub
-2. 在 Zeabur 中导入仓库
-3. 设置环境变量 `DEEPSEEK_API_KEY`
-4. 自动部署完成
+1. 在 Render 导入本仓库（Blueprint 文件为 `render.yaml`）
+2. 首次部署完成后，在服务的 Environment 页面添加 Secret：`DEEPSEEK_API_KEY`
+3. 保存后重新部署，使密钥生效
+
+不要把真实密钥写入 `.env.example`、`render.yaml`、前端代码或 Git 仓库。仅在本机 `.env` 或托管平台的 Secret/Environment 设置中保存。
 
 ## 📄 许可证
 

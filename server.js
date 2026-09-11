@@ -1,5 +1,4 @@
 const express = require('express');
-const cors = require('cors');
 const path = require('path');
 const tarotData = require('./tarot-data.json');
 
@@ -11,9 +10,47 @@ const PORT = process.env.PORT || 3000;
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 const DEEPSEEK_API_URL = 'https://api.deepseek.com/chat/completions';
 
-app.use(cors());
-app.use(express.json());
+app.set('trust proxy', 1);
+app.disable('x-powered-by');
+app.use(express.json({ limit: '16kb' }));
 app.use(express.static(path.join(__dirname, 'public')));
+
+const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
+const RATE_LIMIT_MAX = 8;
+const interpretationRequests = new Map();
+
+function interpretationRateLimit(req, res, next) {
+    const now = Date.now();
+    const key = req.ip || req.socket.remoteAddress || 'unknown';
+
+    if (interpretationRequests.size > 1000) {
+        for (const [ip, timestamps] of interpretationRequests) {
+            const active = timestamps.filter(timestamp => now - timestamp < RATE_LIMIT_WINDOW_MS);
+            if (active.length) interpretationRequests.set(ip, active);
+            else interpretationRequests.delete(ip);
+        }
+    }
+
+    const recent = (interpretationRequests.get(key) || [])
+        .filter(timestamp => now - timestamp < RATE_LIMIT_WINDOW_MS);
+
+    if (recent.length >= RATE_LIMIT_MAX) {
+        return res.status(429).json({ error: '占卜次数过于频繁，请稍后再试' });
+    }
+
+    recent.push(now);
+    interpretationRequests.set(key, recent);
+    next();
+}
+
+function sanitizeAiHtml(value) {
+    return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/&lt;(\/?)(h3|p|strong)&gt;/gi, '<$1$2>')
+        .replace(/&lt;br\s*\/?&gt;/gi, '<br>');
+}
 
 function fisherYatesShuffle(array) {
     const shuffled = [...array];
@@ -39,12 +76,35 @@ app.get('/api/shuffle-deck', (req, res) => {
     }
 });
 
-app.post('/api/interpret', async (req, res) => {
+app.get('/api/health', (req, res) => {
+    res.json({ ok: true, aiConfigured: Boolean(DEEPSEEK_API_KEY) });
+});
+
+app.post('/api/interpret', interpretationRateLimit, async (req, res) => {
     try {
         const { question, cards } = req.body;
+
+        if (!DEEPSEEK_API_KEY) {
+            return res.status(503).json({ error: 'AI 解读尚未配置，请稍后再试' });
+        }
         
         if (!cards || cards.length !== 3) {
             return res.status(400).json({ error: '需要3张牌的数据' });
+        }
+
+        if (typeof question !== 'string' || question.trim().length > 300) {
+            return res.status(400).json({ error: '问题内容无效或超过300字' });
+        }
+
+        const normalizedCards = cards.map(card => {
+            const id = Number(card && card.id);
+            const canonicalCard = Number.isInteger(id) ? tarotData.find(item => item.id === id) : null;
+            if (!canonicalCard || typeof card.isReversed !== 'boolean') return null;
+            return { ...canonicalCard, isReversed: card.isReversed };
+        });
+
+        if (normalizedCards.some(card => !card)) {
+            return res.status(400).json({ error: '牌面数据无效' });
         }
         
         const systemPrompt = `你是一位极其睿智、深谙心理学与神秘学的顶尖塔罗牌占卜师。你的语言风格古典、优美、充满宿命感与哲理，同时温暖、有人情味、富有同理心。你像一位知心挚友，用温柔而坚定的声音为求问者拨开迷雾。
@@ -70,11 +130,11 @@ app.post('/api/interpret', async (req, res) => {
 <p>针对求问者的具体问题，结合牌面，给出具有极高哲学维度、且具备落地指导意义的最终建议。用温暖的话语给予求问者力量与希望。</p>`;
         
         const userPrompt = `
-求问者的问题：${question}
+求问者的问题：${question.trim() || '关于我近期的整体运势与指引'}
 抽到的牌阵：
-[过去]：${cards[0].name} (${cards[0].isReversed ? '逆位' : '正位'})
-[现在]：${cards[1].name} (${cards[1].isReversed ? '逆位' : '正位'})
-[未来]：${cards[2].name} (${cards[2].isReversed ? '逆位' : '正位'})
+[过去]：${normalizedCards[0].name} (${normalizedCards[0].isReversed ? '逆位' : '正位'})
+[现在]：${normalizedCards[1].name} (${normalizedCards[1].isReversed ? '逆位' : '正位'})
+[未来]：${normalizedCards[2].name} (${normalizedCards[2].isReversed ? '逆位' : '正位'})
 请开始你的解读：
 `;
         
@@ -108,7 +168,11 @@ app.post('/api/interpret', async (req, res) => {
         }
         
         const data = await response.json();
-        const interpretation = data.choices[0].message.content;
+        const interpretation = sanitizeAiHtml(data.choices?.[0]?.message?.content);
+
+        if (!interpretation) {
+            return res.status(502).json({ error: 'AI 暂未返回有效解读，请稍后再试' });
+        }
         
         res.json({ interpretation });
         
